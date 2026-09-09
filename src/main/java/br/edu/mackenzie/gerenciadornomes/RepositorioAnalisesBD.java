@@ -1,51 +1,237 @@
 package br.edu.mackenzie.gerenciadornomes;
+
 import java.io.IOException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+
 public class RepositorioAnalisesBD {
-    public static void main(String[] args) {
-    String arquivoEntrada = args.length > 0 ? args[0] : "access.log";
-    String arquivoSaida = args.length > 1 ? args[1] : "relatorio.txt";
 
-    ManipuladorArquivo leitor = new ManipuladorArquivo();
-    IAnalisadorLog analisador = new AnalisadorLog();
+    private final Connection connection;
 
-    try {
-      List<String> linhas = leitor.lerLinhas(arquivoEntrada);
-      int registrosValidos = analisador.contarRegistrosValidos(linhas);
-      List<String> falhas = analisador.listarRequisicoesComFalha(linhas);
-      double tempoMedioPayments = analisador.calcularTempoMedioPayments(linhas);
-      List<String> relatorio = new ArrayList<>();
-
-      relatorio.add("RELATORIO DE ANALISE DO SERVIDOR");
-      relatorio.add("================================");
-      relatorio.add("Registros validos processados: " + registrosValidos);
-      relatorio.add("Requisicoes com falha: " + falhas.size());
-      relatorio.add("");
-      relatorio.add("FALHAS ENCONTRADAS");
-
-      if (falhas.isEmpty()) {
-        relatorio.add("Nenhuma");
-      } else {
-        relatorio.addAll(falhas);
-      }
-
-      relatorio.add("");
-      relatorio.add("TEMPO MEDIO - /api/v1/payments");
-      if (tempoMedioPayments < 0) {
-        relatorio.add("Nao ha dados suficientes para calcular a media.");
-      } else {
-        relatorio.add(String.format(Locale.US, "%.2fms", tempoMedioPayments));
-      }
-
-      leitor.escreverLinhas(arquivoSaida, relatorio);
-      System.out.println("Relatorio gerado em: " + arquivoSaida);
-    } catch (java.io.FileNotFoundException erro) {
-      System.out.println("Arquivo de entrada nao encontrado: " + arquivoEntrada);
-    } catch (IOException erro) {
-      System.out.println("Erro ao processar os arquivos: " + erro.getMessage());
+    public RepositorioAnalisesBD(Connection connection) {
+        this.connection = connection;
     }
-  }
-}
 
+    public void salvar(
+            String arquivo,
+            int registrosValidos,
+            int quantidadeFalhas,
+            double tempoMedioPayments) throws SQLException {
+
+        String sql = """
+                INSERT INTO analises
+                (arquivo, registros_validos, quantidade_falhas, tempo_medio_payments)
+                VALUES (?, ?, ?, ?)
+                """;
+
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+
+            statement.setString(1, arquivo);
+            statement.setInt(2, registrosValidos);
+            statement.setInt(3, quantidadeFalhas);
+            statement.setDouble(4, tempoMedioPayments);
+
+            statement.executeUpdate();
+        }
+    }
+
+    public List<String> listarHistorico() throws SQLException {
+
+        List<String> historico = new ArrayList<>();
+
+        String sql = """
+                SELECT id, arquivo, registros_validos,
+                       quantidade_falhas, tempo_medio_payments
+                FROM analises
+                ORDER BY id
+                """;
+
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet resultSet = statement.executeQuery()) {
+
+            while (resultSet.next()) {
+
+                long id = resultSet.getLong("id");
+                String arquivo = resultSet.getString("arquivo");
+                int registrosValidos = resultSet.getInt("registros_validos");
+                int quantidadeFalhas = resultSet.getInt("quantidade_falhas");
+                double tempoMedioPayments =
+                        resultSet.getDouble("tempo_medio_payments");
+
+                String tempo;
+
+                if (tempoMedioPayments < 0) {
+                    tempo = "sem dados";
+                } else {
+                    tempo = String.format(
+                            Locale.US,
+                            "%.2f ms",
+                            tempoMedioPayments
+                    );
+                }
+
+                String linha = id
+                        + " | " + arquivo
+                        + " | válidos: " + registrosValidos
+                        + " | falhas: " + quantidadeFalhas
+                        + " | payments: " + tempo;
+
+                historico.add(linha);
+            }
+        }
+
+        return historico;
+    }
+
+    public static void main(String[] args) {
+
+        String arquivoEntrada =
+                args.length > 0 ? args[0] : "access.log";
+
+        String arquivoSaida =
+                args.length > 1 ? args[1] : "relatorio.txt";
+
+        String url = "jdbc:h2:file:./data/banco_dados";
+        String usuario = "admin";
+        String senha = "admin";
+
+        ManipuladorArquivo manipulador = new ManipuladorArquivo();
+        IAnalisadorLog analisador = new AnalisadorLog();
+
+        try (Connection connection =
+                     DriverManager.getConnection(url, usuario, senha)) {
+
+            // Cria a tabela caso ainda não exista
+            try (var statement = connection.createStatement()) {
+
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS analises (
+                            id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                            arquivo VARCHAR(500) NOT NULL,
+                            registros_validos INT NOT NULL,
+                            quantidade_falhas INT NOT NULL,
+                            tempo_medio_payments DOUBLE NOT NULL
+                        )
+                        """);
+            }
+
+            // 1. Lê o arquivo
+            List<String> linhas =
+                    manipulador.lerLinhas(arquivoEntrada);
+
+            // 2. Analisa o arquivo
+            int registrosValidos =
+                    analisador.contarRegistrosValidos(linhas);
+
+            List<String> falhas =
+                    analisador.listarRequisicoesComFalha(linhas);
+
+            double tempoMedioPayments =
+                    analisador.calcularTempoMedioPayments(linhas);
+
+            // 3. Monta o relatório
+            List<String> relatorio = new ArrayList<>();
+
+            relatorio.add("RELATORIO DE ANALISE DO SERVIDOR");
+            relatorio.add("================================");
+            relatorio.add(
+                    "Registros validos processados: "
+                            + registrosValidos
+            );
+            relatorio.add(
+                    "Requisicoes com falha: "
+                            + falhas.size()
+            );
+
+            relatorio.add("");
+            relatorio.add("FALHAS ENCONTRADAS");
+
+            if (falhas.isEmpty()) {
+                relatorio.add("Nenhuma");
+            } else {
+                relatorio.addAll(falhas);
+            }
+
+            relatorio.add("");
+            relatorio.add("TEMPO MEDIO - /api/v1/payments");
+
+            if (tempoMedioPayments < 0) {
+                relatorio.add(
+                        "Nao ha dados suficientes para calcular a media."
+                );
+            } else {
+                relatorio.add(
+                        String.format(
+                                Locale.US,
+                                "%.2fms",
+                                tempoMedioPayments
+                        )
+                );
+            }
+
+            // 4. Gera o relatório
+            manipulador.escreverLinhas(
+                    arquivoSaida,
+                    relatorio
+            );
+
+            System.out.println(
+                    "Relatorio gerado em: " + arquivoSaida
+            );
+
+            // 5. Salva a análise no banco
+            RepositorioAnalisesBD repositorio =
+                    new RepositorioAnalisesBD(connection);
+
+            repositorio.salvar(
+                    arquivoEntrada,
+                    registrosValidos,
+                    falhas.size(),
+                    tempoMedioPayments
+            );
+
+            System.out.println(
+                    "\nAnalise salva no banco de dados."
+            );
+
+            // 6. Consulta o histórico
+            List<String> historico =
+                    repositorio.listarHistorico();
+
+            System.out.println(
+                    "\n===== HISTORICO DE ANALISES ====="
+            );
+
+            for (String linha : historico) {
+                System.out.println(linha);
+            }
+
+        } catch (java.io.FileNotFoundException erro) {
+
+            System.out.println(
+                    "Arquivo de entrada nao encontrado: "
+                            + arquivoEntrada
+            );
+
+        } catch (IOException erro) {
+
+            System.out.println(
+                    "Erro ao processar os arquivos: "
+                            + erro.getMessage()
+            );
+
+        } catch (SQLException erro) {
+
+            System.out.println(
+                    "Erro no banco de dados: "
+                            + erro.getMessage()
+            );
+        }
+    }
+}

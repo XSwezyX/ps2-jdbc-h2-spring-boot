@@ -97,9 +97,9 @@ public class GerenciadorNomesApplication implements CommandLineRunner {
         }
     }
 }
-private void analisadorArquivo(connection connection){
+private void analisadorArquivo(Connection connection){
 
-    
+
 }
 
 }
